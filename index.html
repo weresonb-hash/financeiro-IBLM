@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Financeiro Igreja - Gestão Financeira</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -916,19 +918,68 @@
     </div>
 
     <script>
+        // 1. CONFIGURAÇÃO DO SEU FIREBASE (Substitua pelos seus dados do console)
+        const firebaseConfig = {
+            apiKey: "AIzaSyAUhgnaZuaEaf_f9qfptB4A5TN3BsGgJ-w",
+            authDomain: "financeiroigreja-2f7a8.firebaseapp.com",
+            projectId: "financeiroigreja-2f7a8",
+            storageBucket: "financeiroigreja-2f7a8.firebasestorage.app",
+            messagingSenderId: "293872748599",
+            appId: "1:293872748599:web:59cabbc6654aa65364d7b2",
+            measurementId: "G-HZHWPP0T3M"
+        };
+
+        // Inicializar Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
         // CORREÇÃO: Declarar churchSystem como variável global primeiro
         let churchSystem;
 
         // Sistema de Gestão Financeira para Igrejas
         class ChurchFinancialSystem {
             constructor() {
-                this.transactions = JSON.parse(localStorage.getItem('churchTransactions')) || [];
-                this.categories = JSON.parse(localStorage.getItem('churchCategories')) || this.getDefaultCategories();
-                this.currentEditingTransaction = null;
-                this.expensesPieChart = null;
-                this.currentEditingCategory = null;
-                this.trendChart = null;
-                this.init();
+                this.transactions = [];
+                this.setupRealtimeSync(); // Sincronização em tempo real
+            }
+
+            // 2. SINCRONIZAÇÃO EM TEMPO REAL (O segredo para atualizar celular e PC ao mesmo tempo)
+            setupRealtimeSync() {
+                db.collection("transacoes").orderBy("date", "desc")
+                    .onSnapshot((snapshot) => {
+                        this.transactions = [];
+                        snapshot.forEach((doc) => {
+                            const data = doc.data();
+                            this.transactions.push({ id: doc.id, ...data });
+                        });
+                        this.updateUI();
+                    });
+            }
+
+            // 3. SALVAR NO FIREBASE
+            async addTransaction(transaction) {
+                try {
+                    await db.collection("transacoes").add(transaction);
+                    console.log("Salvo na nuvem!");
+                } catch (error) {
+                    console.error("Erro ao salvar:", error);
+                    alert("Erro ao sincronizar com a nuvem.");
+                }
+            }
+
+            // 4. DELETAR DO FIREBASE
+            async deleteTransaction(id) {
+                try {
+                    await db.collection("transacoes").doc(id).delete();
+                } catch (error) {
+                    console.error("Erro ao deletar:", error);
+                }
+            }
+
+            updateUI() {
+                this.updateBalance();
+                this.renderTransactions();
+                this.updateCharts();
             }
 
             init() {
@@ -1065,12 +1116,20 @@
 
             setupFormHandlers() {
                 // Formulário de transação
-                const transactionForm = document.getElementById('transactionForm');
-                if (transactionForm) {
-                    transactionForm.addEventListener('submit', (e) => {
-                        e.preventDefault();
-                        this.addTransaction();
-                    });
+                const form = document.getElementById('transactionForm');
+                form.onsubmit = async (e) => {
+                    e.preventDefault();
+                    const newTransaction = {
+                        description: document.getElementById('description').value,
+                        amount: parseFloat(document.getElementById('amount').value),
+                        type: document.getElementById('type').value,
+                        category: document.getElementById('category').value,
+                        date: document.getElementById('date').value,
+                        createdAt: new Date().toISOString()
+                    };
+                    
+                    await this.addTransaction(newTransaction);
+                    form.reset();
                 }
 
                 // Formulário de categoria
