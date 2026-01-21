@@ -944,35 +944,60 @@
                 this.setupRealtimeSync();
             }
 
+            
+
+            // Método auxiliar para formatar em Real (R$)
+            formatCurrency(value) {
+                return new Intl.NumberFormat('pt-BR', {
+                    style: 'currency',
+                    currency: 'BRL'
+                }).format(value);
+            }
+
             // SINCRONIZAÇÃO EM TEMPO REAL (Transações, Categorias e Logo)
             setupRealtimeSync() {
                 // Sincronizar Transações
                 db.collection("transacoes").orderBy("date", "desc").onSnapshot((snapshot) => {
                     this.transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                     this.updateUI();
-                });
+                }, (error) => console.error("Erro em Transações:", error));
 
-                // Sincronizar Categorias
+                // Dentro do seu setupRealtimeSync()
                 db.collection("configuracoes").doc("categorias").onSnapshot((doc) => {
                     if (doc.exists) {
-                        this.categories = doc.data().lista;
+                        const data = doc.data();
+                        // Verifica se o que está no Firebase é a sua estrutura de income/expense
+                        if (data.income && data.expense) {
+                            this.categories = data;
+                        } else {
+                            this.categories = this.getDefaultCategories();
+                            this.saveCategoriesCloud();
+                        }
                     } else {
-                        // Se não existir no banco, cria as padrões
-                        this.categories = ['Dízimo', 'Oferta', 'Doação', 'Aluguel', 'Energia', 'Água', 'Manutenção'];
+                        this.categories = this.getDefaultCategories();
                         this.saveCategoriesCloud();
                     }
-                    this.renderCategories();
+                    
+                    // ATUALIZAÇÃO: Força o preenchimento do select de categorias principal
+                    const typeSelect = document.getElementById('transactionType');
+                    if (typeSelect) {
+                        this.updateCategoryOptions(typeSelect.value);
+                        this.updateCategoryOptions(document.getElementById('transactionType')?.value || 'income');
+                        this.renderCategories();
+                    }
                 });
 
                 // Sincronizar Logo
                 db.collection("configuracoes").doc("logo").onSnapshot((doc) => {
-                    if (doc.exists) {
+                    if (doc.exists && doc.data().base64) {
                         const logoData = doc.data().base64;
                         const placeholder = document.getElementById('logoPlaceholder');
-                        placeholder.innerHTML = `<img src="${logoData}" class="church-logo">`;
+                        if (placeholder) {
+                            placeholder.innerHTML = `<img src="${logoData}" class="church-logo">`;
+                        }
                     }
                 });
-            }
+}
 
             // 3. SALVAR NO FIREBASE
             async addTransaction(transaction) {
@@ -984,7 +1009,8 @@
             }
 
             async saveCategoriesCloud() {
-                await db.collection("configuracoes").doc("categorias").set({ lista: this.categories });
+                // Salva o objeto completo de categorias (com income e expense)
+                await db.collection("configuracoes").doc("categorias").set(this.categories);
             }
 
             async updateLogoCloud(base64Data) {
@@ -1004,6 +1030,32 @@
                 this.updateBalance();
                 this.renderTransactions();
                 this.updateCharts();
+            }
+
+            updateBalance() {
+                // 1. Calcula os totais baseados no array de transações
+                const income = this.transactions
+                    .filter(t => t.type === 'income')
+                    .reduce((sum, t) => sum + parseFloat(t.amount || 0), 0);
+
+                const expense = this.transactions
+                    .filter(t => t.type === 'expense')
+                    .reduce((sum, t) => sum + parseFloat(t.amount || 0), 0);
+
+                const balance = income - expense;
+
+                // 2. Atualiza os elementos na tela
+                const totalIncomeEl = document.getElementById('totalIncome');
+                const totalExpensesEl = document.getElementById('totalExpenses');
+                const currentBalanceEl = document.getElementById('currentBalance');
+
+                if (totalIncomeEl) totalIncomeEl.innerText = this.formatCurrency(income);
+                if (totalExpensesEl) totalExpensesEl.innerText = this.formatCurrency(expense);
+                if (currentBalanceEl) {
+                    currentBalanceEl.innerText = this.formatCurrency(balance);
+                    // Muda a cor do saldo (Azul para positivo, Vermelho para negativo)
+                    currentBalanceEl.style.color = balance >= 0 ? '#3498db' : '#e74c3c';
+                }
             }
 
             init() {
@@ -1242,54 +1294,58 @@
                 if (reportEndDate) reportEndDate.value = lastDay;
             }
 
+            // Preenche o Select de Categorias (Pai)
             updateCategoryOptions(type) {
                 const categorySelect = document.getElementById('transactionCategory');
+                const subcategorySelect = document.getElementById('transactionSubcategory');
                 if (!categorySelect) return;
-                
+
                 categorySelect.innerHTML = '<option value="">Selecione a categoria</option>';
-                
-                if (type && this.categories[type]) {
-                    this.categories[type].forEach(category => {
+                if (subcategorySelect) subcategorySelect.innerHTML = '<option value="">Selecione primeiro a categoria</option>';
+
+                const list = this.categories[type];
+
+                if (list && Array.isArray(list)) {
+                    list.forEach(cat => {
                         const option = document.createElement('option');
-                        option.value = category.id;
-                        option.textContent = category.name;
+                        option.value = cat.id; 
+                        option.textContent = cat.name;
                         categorySelect.appendChild(option);
                     });
                 }
             }
 
+            // Preenche o Select de Subcategorias (Filho)
             updateSubcategoryOptions(categoryId) {
                 const subcategorySelect = document.getElementById('transactionSubcategory');
                 if (!subcategorySelect) return;
-                
+
                 subcategorySelect.innerHTML = '<option value="">Selecione a subcategoria</option>';
+
+                const type = document.getElementById('transactionType').value;
+                const categoryList = this.categories[type];
                 
-                if (categoryId) {
-                    const type = document.getElementById('transactionType').value;
-                    const category = this.categories[type]?.find(cat => cat.id === categoryId);
-                    
-                    if (category && category.subcategories) {
-                        category.subcategories.forEach(subcategory => {
-                            const option = document.createElement('option');
-                            option.value = subcategory;
-                            option.textContent = subcategory;
-                            subcategorySelect.appendChild(option);
-                        });
-                    }
+                // Busca a categoria selecionada para pegar as subcategorias dela
+                const selectedCategory = categoryList.find(c => c.id === categoryId);
+
+                if (selectedCategory && selectedCategory.subcategories) {
+                    selectedCategory.subcategories.forEach(sub => {
+                        const option = document.createElement('option');
+                        option.value = sub;
+                        option.textContent = sub;
+                        subcategorySelect.appendChild(option);
+                    });
                 }
             }
 
+            // Repita a lógica para o formulário de EDIÇÃO (se você usar o Modal de editar)
             updateEditCategoryOptions(type) {
                 const categorySelect = document.getElementById('editTransactionCategory');
-                if (!categorySelect) return;
-                
-                categorySelect.innerHTML = '<option value="">Selecione a categoria</option>';
-                
-                if (type && this.categories[type]) {
-                    this.categories[type].forEach(category => {
+                if (categorySelect) {
+                    this.categories[type].forEach(cat => {
                         const option = document.createElement('option');
-                        option.value = category.id;
-                        option.textContent = category.name;
+                        option.value = cat.id;
+                        option.textContent = cat.name;
                         categorySelect.appendChild(option);
                     });
                 }
@@ -1433,174 +1489,143 @@
                 }
             }
 
-            saveEditedCategory() {
-                if (!this.currentEditingCategory || !this.currentEditingCategory.id) {
-                    this.showToast('Erro: modo de edição não inicializado', 'error');
-                    return;
-                }
-
-                const categoryName = document.getElementById('categoryName');
-                const categoryType = document.getElementById('categoryType');
-                const categorySubcategories = document.getElementById('categorySubcategories');
-
-                if (!categoryName || !categoryType || !categorySubcategories) return;
-
-                const newName = categoryName.value.trim();
-                const newType = categoryType.value;
-                const subcategoriesText = categorySubcategories.value.trim();
-                
-                if (!newName) {
-                    this.showToast('Nome da categoria é obrigatório', 'error');
-                    return;
-                }
-
-                const subcategories = subcategoriesText ? 
-                    subcategoriesText.split(',').map(s => s.trim()).filter(s => s) : [];
-
-                // Encontrar a categoria original
-                const originalType = this.currentEditingCategory.originalType;
-                const categoryIndex = this.categories[originalType].findIndex(
-                    cat => cat.id === this.currentEditingCategory.id
-                );
-                
-                if (categoryIndex === -1) {
-                    this.showToast('Categoria original não encontrada', 'error');
-                    return;
-                }
-
-                // Se mudou o tipo, verificar se há transações
-                if (newType !== originalType) {
-                    const hasTransactions = this.transactions.some(t => t.categoryId === this.currentEditingCategory.id);
-                    if (hasTransactions) {
-                        this.showToast('Não é possível mudar o tipo: há transações usando esta categoria', 'error');
-                        return;
-                    }
-                }
-
-                // Atualizar a categoria
-                const updatedCategory = {
-                    id: this.currentEditingCategory.id,
-                    name: newName,
-                    subcategories: subcategories
-                };
-
-                // Se mudou o tipo, mover para o novo array
-                if (newType !== originalType) {
-                    // Remover da posição antiga
-                    this.categories[originalType].splice(categoryIndex, 1);
-                    
-                    // Adicionar na nova posição
-                    if (!this.categories[newType]) {
-                        this.categories[newType] = [];
-                    }
-                    this.categories[newType].push(updatedCategory);
-                } else {
-                    // Mesmo tipo, apenas atualizar
-                    this.categories[originalType][categoryIndex] = updatedCategory;
-                }
-
-                // Limpar estado de edição
-                this.currentEditingCategory = null;
-                
-                // Atualizar interface
-                this.saveData();
-                this.renderCategories();
-                this.closeCategoryModal();
-                this.showToast('Categoria atualizada com sucesso!', 'success');
-            }
-
-            // Adicione esta função dentro da classe ChurchFinancialSystem
-            editCategory(type, categoryId) {
+            // 1. Inicia o modo de edição e abre o modal
+            editCategory(categoryId, type) {
+                // Busca a categoria correta no objeto (income ou expense)
                 const category = this.categories[type]?.find(cat => cat.id === categoryId);
-                if (!category) return;
+                if (!category) {
+                    this.showToast('Categoria não encontrada', 'error');
+                    return;
+                }
 
-                // Preencher o formulário de edição
+                // Pega os elementos do Modal
                 const categoryModal = document.getElementById('categoryModal');
                 const categoryName = document.getElementById('categoryName');
                 const categoryType = document.getElementById('categoryType');
                 const categorySubcategories = document.getElementById('categorySubcategories');
                 const categoryModalTitle = document.getElementById('categoryModalTitle');
 
-                if (categoryModal && categoryName && categoryType && categorySubcategories && categoryModalTitle) {
+                if (categoryModal && categoryName) {
                     categoryName.value = category.name;
                     categoryType.value = type;
+                    // Transforma o array de subcategorias em texto separado por vírgula para o input
                     categorySubcategories.value = category.subcategories ? category.subcategories.join(', ') : '';
                     categoryModalTitle.textContent = 'Editar Categoria';
                     
-                    // Armazenar informações de edição
-                    this.currentEditingCategory = { type: type, id: categoryId };
+                    // Guarda qual categoria estamos editando e o tipo original dela
+                    this.currentEditingCategory = { 
+                        id: categoryId, 
+                        originalType: type 
+                    };
                     
                     categoryModal.style.display = 'block';
                 }
             }
 
-            // E também adicione a função para salvar a edição da categoria
-            saveEditedCategory() {
-                if (!this.currentEditingCategory) return;
-
-                const categoryName = document.getElementById('categoryName');
-                const categoryType = document.getElementById('categoryType');
-                const categorySubcategories = document.getElementById('categorySubcategories');
-
-                if (!categoryName || !categoryType || !categorySubcategories) return;
-
-                const newName = categoryName.value.trim();
-                const newType = categoryType.value;
-                const subcategoriesText = categorySubcategories.value.trim();
-                
-                if (!newName) {
-                    this.showToast('Nome da categoria é obrigatório', 'error');
+            // 2. Salva as alterações na memória e envia para o Firebase
+            async saveEditedCategory() {
+                if (!this.currentEditingCategory || !this.currentEditingCategory.id) {
+                    this.showToast('Erro: modo de edição não inicializado', 'error');
                     return;
                 }
 
-                // Verificar se mudou o tipo e se há transações
-                if (newType !== this.currentEditingCategory.type) {
-                    const hasTransactions = this.transactions.some(t => t.categoryId === this.currentEditingCategory.id);
+                const categoryName = document.getElementById('categoryName').value.trim();
+                const newType = document.getElementById('categoryType').value;
+                const subcategoriesText = document.getElementById('categorySubcategories').value.trim();
+                
+                if (!categoryName) {
+                    this.showToast('O nome da categoria é obrigatório', 'error');
+                    return;
+                }
+
+                // Processa o texto das subcategorias de volta para um Array
+                const subcategories = subcategoriesText ? 
+                    subcategoriesText.split(',').map(s => s.trim()).filter(s => s) : [];
+
+                const originalType = this.currentEditingCategory.originalType;
+                const catId = this.currentEditingCategory.id;
+
+                // Se mudou de Receita para Despesa (ou vice-versa), verifica se já existem transações nela
+                if (newType !== originalType) {
+                    const hasTransactions = this.transactions.some(t => t.categoryId === catId);
                     if (hasTransactions) {
-                        this.showToast('Não é possível mudar o tipo: há transações usando esta categoria', 'error');
+                        this.showToast('Não é possível mudar o tipo: existem lançamentos vinculados a esta categoria', 'error');
                         return;
                     }
                 }
 
-                const subcategories = subcategoriesText ? 
-                    subcategoriesText.split(',').map(s => s.trim()).filter(s => s) : [];
+                // Cria o objeto atualizado
+                const updatedCategory = {
+                    id: catId,
+                    name: categoryName,
+                    subcategories: subcategories
+                };
 
-                // Remover categoria antiga da posição original
-                const oldCategoryIndex = this.categories[this.currentEditingCategory.type].findIndex(
-                    cat => cat.id === this.currentEditingCategory.id
-                );
-                
-                if (oldCategoryIndex !== -1) {
-                    this.categories[this.currentEditingCategory.type].splice(oldCategoryIndex, 1);
-                }
-
-                // Adicionar na nova posição se mudou o tipo
-                if (newType !== this.currentEditingCategory.type) {
-                    if (!this.categories[newType]) {
-                        this.categories[newType] = [];
-                    }
-                    this.categories[newType].push({
-                        id: this.currentEditingCategory.id,
-                        name: newName,
-                        subcategories: subcategories
-                    });
+                // Lógica de atualização no objeto local
+                if (newType !== originalType) {
+                    // Remove do tipo antigo e adiciona no novo
+                    this.categories[originalType] = this.categories[originalType].filter(cat => cat.id !== catId);
+                    if (!this.categories[newType]) this.categories[newType] = [];
+                    this.categories[newType].push(updatedCategory);
                 } else {
-                    // Mesmo tipo, apenas atualizar
-                    this.categories[newType][oldCategoryIndex] = {
-                        id: this.currentEditingCategory.id,
-                        name: newName,
-                        subcategories: subcategories
-                    };
+                    // Apenas atualiza na mesma lista
+                    const index = this.categories[originalType].findIndex(cat => cat.id === catId);
+                    if (index !== -1) {
+                        this.categories[originalType][index] = updatedCategory;
+                    }
                 }
 
-                this.currentEditingCategory = null;
-                this.saveData();
-                this.renderCategories();
-                this.closeCategoryModal();
-                this.showToast('Categoria atualizada com sucesso!', 'success');
+                try {
+                    // ENVIAR PARA O FIREBASE (Sincronização em tempo real)
+                    await db.collection("configuracoes").doc("categorias").set(this.categories);
+                    
+                    this.currentEditingCategory = null;
+                    this.renderCategories(); // Atualiza a lista visualmente
+                    this.updateCategoryOptions(document.getElementById('transactionType')?.value || 'income'); // Atualiza os selects do form
+                    this.closeCategoryModal();
+                    this.showToast('Categoria atualizada com sucesso!', 'success');
+                } catch (error) {
+                    console.error("Erro ao salvar no Firebase:", error);
+                    this.showToast('Erro ao salvar na nuvem', 'error');
+                }
             }
 
-            
+            async deleteCategory(categoryId, type) {
+                // 1. Confirmação do utilizador
+                if (!confirm('Tem a certeza que deseja eliminar esta categoria e todas as suas subcategorias?')) {
+                    return;
+                }
+
+                // 2. Verificação de segurança: verificar se existem transações que usam esta categoria
+                const hasTransactions = this.transactions.some(t => t.categoryId === categoryId);
+                
+                if (hasTransactions) {
+                    this.showToast('Não é possível eliminar: existem lançamentos financeiros vinculados a esta categoria.', 'error');
+                    return;
+                }
+
+                try {
+                    // 3. Remover a categoria do objeto local
+                    if (this.categories[type]) {
+                        this.categories[type] = this.categories[type].filter(cat => cat.id !== categoryId);
+                        
+                        // 4. Atualizar o Firebase
+                        await db.collection("configuracoes").doc("categorias").set(this.categories);
+                        
+                        // 5. Atualizar a interface
+                        this.renderCategories(); // Atualiza a lista na gestão
+                        
+                        // Atualiza os selects do formulário principal
+                        const currentType = document.getElementById('transactionType')?.value || 'income';
+                        this.updateCategoryOptions(currentType);
+                        
+                        this.showToast('Categoria eliminada com sucesso!', 'success');
+                    }
+                } catch (error) {
+                    console.error("Erro ao eliminar categoria:", error);
+                    this.showToast('Erro ao ligar à nuvem para eliminar.', 'error');
+                }
+            }
                 
 
             updateDashboard() {
@@ -1959,8 +1984,54 @@
             }
 
             renderCategories() {
-                this.renderCategoryGroup('income');
-                this.renderCategoryGroup('expense');
+                const incomeDiv = document.getElementById('incomeCategories');
+                const expenseDiv = document.getElementById('expenseCategories');
+
+                if (!incomeDiv || !expenseDiv) return;
+
+                incomeDiv.innerHTML = '';
+                expenseDiv.innerHTML = '';
+
+                // Renderizar Receitas
+                if (this.categories.income) {
+                    this.categories.income.forEach(cat => {
+                        incomeDiv.appendChild(this.createCategoryElement(cat, 'income'));
+                    });
+                }
+
+                // Renderizar Despesas
+                if (this.categories.expense) {
+                    this.categories.expense.forEach(cat => {
+                        expenseDiv.appendChild(this.createCategoryElement(cat, 'expense'));
+                    });
+                }
+            }
+
+
+            createCategoryElement(category, type) {
+                const div = document.createElement('div');
+                div.className = 'category-item';
+                
+                // Formata o texto das subcategorias para exibição
+                const subsText = category.subcategories && category.subcategories.length > 0 
+                    ? `<br><small style="color: #7f8c8d"> ${category.subcategories.join(', ')}</small>` 
+                    : '';
+
+                div.innerHTML = `
+                    <div>
+                        <strong>${category.name}</strong>
+                        ${subsText}
+                    </div>
+                    <div class="category-actions">
+                        <button onclick="churchSystem.editCategory('${category.id}', '${type}')" class="btn btn-warning btn-small">
+                            <i class="fas fa-edit"></i>
+                        </button>
+                        <button onclick="churchSystem.deleteCategory('${category.id}', '${type}')" class="btn btn-danger btn-small">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                `;
+                return div;
             }
 
             renderCategoryGroup(type) {
@@ -2774,6 +2845,15 @@
                 churchSystem.setupFormHandlers();
                 churchSystem.setDefaultDates();
             }
+        });
+        // Quando mudar entre Receita e Despesa
+        document.getElementById('transactionType').addEventListener('change', (e) => {
+            churchSystem.updateCategoryOptions(e.target.value);
+        });
+
+        // Quando escolher uma Categoria (ex: Dízimos), carrega as Subcategorias (ex: Mensal)
+        document.getElementById('transactionCategory').addEventListener('change', (e) => {
+            churchSystem.updateSubcategoryOptions(e.target.value);
         });
     </script>
 </body>
