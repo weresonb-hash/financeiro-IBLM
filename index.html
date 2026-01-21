@@ -940,31 +940,55 @@
         class ChurchFinancialSystem {
             constructor() {
                 this.transactions = [];
-                this.setupRealtimeSync(); // Sincronização em tempo real
+                this.categories = [];
+                this.setupRealtimeSync();
             }
 
-            // 2. SINCRONIZAÇÃO EM TEMPO REAL (O segredo para atualizar celular e PC ao mesmo tempo)
+            // SINCRONIZAÇÃO EM TEMPO REAL (Transações, Categorias e Logo)
             setupRealtimeSync() {
-                db.collection("transacoes").orderBy("date", "desc")
-                    .onSnapshot((snapshot) => {
-                        this.transactions = [];
-                        snapshot.forEach((doc) => {
-                            const data = doc.data();
-                            this.transactions.push({ id: doc.id, ...data });
-                        });
-                        this.updateUI();
-                    });
+                // Sincronizar Transações
+                db.collection("transacoes").orderBy("date", "desc").onSnapshot((snapshot) => {
+                    this.transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    this.updateUI();
+                });
+
+                // Sincronizar Categorias
+                db.collection("configuracoes").doc("categorias").onSnapshot((doc) => {
+                    if (doc.exists) {
+                        this.categories = doc.data().lista;
+                    } else {
+                        // Se não existir no banco, cria as padrões
+                        this.categories = ['Dízimo', 'Oferta', 'Doação', 'Aluguel', 'Energia', 'Água', 'Manutenção'];
+                        this.saveCategoriesCloud();
+                    }
+                    this.renderCategories();
+                });
+
+                // Sincronizar Logo
+                db.collection("configuracoes").doc("logo").onSnapshot((doc) => {
+                    if (doc.exists) {
+                        const logoData = doc.data().base64;
+                        const placeholder = document.getElementById('logoPlaceholder');
+                        placeholder.innerHTML = `<img src="${logoData}" class="church-logo">`;
+                    }
+                });
             }
 
             // 3. SALVAR NO FIREBASE
             async addTransaction(transaction) {
-                try {
-                    await db.collection("transacoes").add(transaction);
-                    console.log("Salvo na nuvem!");
-                } catch (error) {
-                    console.error("Erro ao salvar:", error);
-                    alert("Erro ao sincronizar com a nuvem.");
-                }
+                await db.collection("transacoes").add(transaction);
+            }
+
+            async deleteTransaction(id) {
+                await db.collection("transacoes").doc(id).delete();
+            }
+
+            async saveCategoriesCloud() {
+                await db.collection("configuracoes").doc("categorias").set({ lista: this.categories });
+            }
+
+            async updateLogoCloud(base64Data) {
+                await db.collection("configuracoes").doc("logo").set({ base64: base64Data });
             }
 
             // 4. DELETAR DO FIREBASE
