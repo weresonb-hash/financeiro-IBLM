@@ -959,8 +959,13 @@
                 // Sincronizar Transações
                 db.collection("transacoes").orderBy("date", "desc").onSnapshot((snapshot) => {
                     this.transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    this.updateUI();
-                }, (error) => console.error("Erro em Transações:", error));
+                    
+                    // Essencial para o gráfico atualizar em tempo real no outro terminal:
+                    this.updateUI(); 
+                    if (typeof this.updateCharts === 'function') {
+                        this.updateCharts(); 
+                    }
+                });
 
                 // Sincronizar Categorias em Tempo Real
                 db.collection("configuracoes").doc("categorias").onSnapshot((doc) => {
@@ -990,13 +995,15 @@
                 db.collection("configuracoes").doc("logo").onSnapshot((doc) => {
                     if (doc.exists && doc.data().base64) {
                         const logoData = doc.data().base64;
-                        const placeholder = document.getElementById('logoPlaceholder');
-                        if (placeholder) {
-                            placeholder.innerHTML = `<img src="${logoData}" class="church-logo">`;
-                        }
+                        const placeholders = document.querySelectorAll('.logo-container, #logoPlaceholder');
+                        
+                        placeholders.forEach(el => {
+                            el.innerHTML = `<img src="${logoData}" style="max-height: 50px; width: auto;">`;
+                        });
+                        console.log("Logo atualizada em todos os terminais");
                     }
                 });
-}
+            }
 
             // 3. SALVAR NO FIREBASE
             async addTransaction(transaction) {
@@ -1008,12 +1015,24 @@
             }
 
             async saveCategoriesCloud() {
-                // Salva o objeto completo de categorias (com income e expense)
-                await db.collection("configuracoes").doc("categorias").set(this.categories);
+                try {
+                    // Envia o objeto INTEIRO de categorias para o Firebase
+                    await db.collection("configuracoes").doc("categorias").set(this.categories);
+                    this.showToast('Categorias sincronizadas na nuvem!', 'success');
+                } catch (error) {
+                    console.error("Erro ao sincronizar categorias:", error);
+                    this.showToast('Erro ao salvar categorias na nuvem.', 'error');
+                }
             }
 
-            async updateLogoCloud(base64Data) {
-                await db.collection("configuracoes").doc("logo").set({ base64: base64Data });
+            async uploadLogo(file) {
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    const base64 = e.target.result;
+                    // Salva na nuvem para todos os terminais verem
+                    await db.collection("configuracoes").doc("logo").set({ base64 });
+                };
+                reader.readAsDataURL(file);
             }
 
             // 4. DELETAR DO FIREBASE
