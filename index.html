@@ -962,9 +962,7 @@
                     
                     // Essencial para o gráfico atualizar em tempo real no outro terminal:
                     this.updateUI(); 
-                    if (typeof this.updateCharts === 'function') {
-                        this.updateCharts(); 
-                    }
+                    this.updateCharts();
                 });
 
                 // Sincronizar Categorias em Tempo Real
@@ -978,8 +976,8 @@
                         this.renderCategories();
                         
                         // 2. Atualiza os campos de seleção (dropdowns) do formulário
-                        const currentType = document.getElementById('transactionType')?.value || 'income';
-                        this.updateCategoryOptions(currentType);
+                        const type = document.getElementById('transactionType')?.value || 'income';
+                        this.updateCategoryOptions(type);
                         
                         console.log("Categorias sincronizadas entre terminais.");
                     } else {
@@ -1028,9 +1026,17 @@
             async uploadLogo(file) {
                 const reader = new FileReader();
                 reader.onload = async (e) => {
-                    const base64 = e.target.result;
-                    // Salva na nuvem para todos os terminais verem
-                    await db.collection("configuracoes").doc("logo").set({ base64 });
+                    const base64Data = e.target.result;
+                    
+                    try {
+                        // Grava no Firebase. Isso criará o campo 'base64' que está faltando.
+                        await db.collection("configuracoes").doc("logo").set({
+                            base64: base64Data
+                        });
+                        this.showToast('Logo atualizada em todos os terminais!', 'success');
+                    } catch (error) {
+                        console.error("Erro ao salvar logo:", error);
+                    }
                 };
                 reader.readAsDataURL(file);
             }
@@ -1276,14 +1282,13 @@
                 }
             }
 
-            saveCategory() {
+            async saveCategory() {
                 // Verificar se está em modo de edição
                 if (this.currentEditingCategory) {
                     this.saveEditedCategory();
                     return;
                 }
                 
-                // Código original para adicionar nova categoria
                 const categoryName = document.getElementById('categoryName');
                 const categoryType = document.getElementById('categoryType');
                 const categorySubcategories = document.getElementById('categorySubcategories');
@@ -1299,13 +1304,6 @@
                 const subcategories = subcategoriesText ? 
                     subcategoriesText.split(',').map(s => s.trim()).filter(s => s) : [];
 
-
-                if (this.currentEditingCategory && this.currentEditingCategory.id) {
-                    // MODO EDIÇÃO
-                    this.saveEditedCategory();
-                    return;
-                }
-
                 const newCategory = {
                     id: `cat-${type}-${Date.now()}`,
                     name: name,
@@ -1316,11 +1314,20 @@
                     this.categories[type] = [];
                 }
 
+                // Adiciona ao objeto local
                 this.categories[type].push(newCategory);
-                this.saveData();
-                this.renderCategories();
-                this.closeCategoryModal();
-                this.showToast('Categoria salva com sucesso!', 'success');
+
+                try {
+                    // SALVA NO FIREBASE (Isso faz atualizar em todos os terminais)
+                    await db.collection("configuracoes").doc("categorias").set(this.categories);
+                    
+                    this.renderCategories();
+                    this.closeCategoryModal();
+                    this.showToast('Categoria salva na nuvem com sucesso!', 'success');
+                } catch (error) {
+                    console.error("Erro ao salvar categoria no Firebase:", error);
+                    this.showToast('Erro ao sincronizar categoria.', 'error');
+                }
             }
 
             setDefaultDates() {
