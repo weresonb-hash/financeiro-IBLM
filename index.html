@@ -962,29 +962,28 @@
                     this.updateUI();
                 }, (error) => console.error("Erro em Transações:", error));
 
-                // Dentro do seu setupRealtimeSync()
+                // Sincronizar Categorias em Tempo Real
                 db.collection("configuracoes").doc("categorias").onSnapshot((doc) => {
                     if (doc.exists) {
                         const data = doc.data();
-                        // Verifica se o que está no Firebase é a sua estrutura de income/expense
-                        if (data.income && data.expense) {
-                            this.categories = data;
-                        } else {
-                            this.categories = this.getDefaultCategories();
-                            this.saveCategoriesCloud();
-                        }
+                        // Atualiza a memória local do sistema com o que veio da nuvem
+                        this.categories = data;
+                        
+                        // 1. Atualiza a lista visual em "Gerenciar Categorias"
+                        this.renderCategories();
+                        
+                        // 2. Atualiza os campos de seleção (dropdowns) do formulário
+                        const currentType = document.getElementById('transactionType')?.value || 'income';
+                        this.updateCategoryOptions(currentType);
+                        
+                        console.log("Categorias sincronizadas entre terminais.");
                     } else {
+                        // Se o documento sumir do banco, restaura o padrão
                         this.categories = this.getDefaultCategories();
                         this.saveCategoriesCloud();
                     }
-                    
-                    // ATUALIZAÇÃO: Força o preenchimento do select de categorias principal
-                    const typeSelect = document.getElementById('transactionType');
-                    if (typeSelect) {
-                        this.updateCategoryOptions(typeSelect.value);
-                        this.updateCategoryOptions(document.getElementById('transactionType')?.value || 'income');
-                        this.renderCategories();
-                    }
+                }, (error) => {
+                    console.error("Erro na sincronização de categorias:", error);
                 });
 
                 // Sincronizar Logo
@@ -1191,22 +1190,51 @@
             }
 
             setupFormHandlers() {
-                // Formulário de transação
                 const form = document.getElementById('transactionForm');
+                if (!form) return;
+
                 form.onsubmit = async (e) => {
                     e.preventDefault();
-                    const newTransaction = {
-                        description: document.getElementById('description').value,
-                        amount: parseFloat(document.getElementById('amount').value),
-                        type: document.getElementById('type').value,
-                        category: document.getElementById('category').value,
-                        date: document.getElementById('date').value,
+
+                    // 1. Captura dos elementos do HTML
+                    const descEl = document.getElementById('transactionDescription');
+                    const amountEl = document.getElementById('transactionAmount');
+                    const typeEl = document.getElementById('transactionType');
+                    const catEl = document.getElementById('transactionCategory');
+                    const subCatEl = document.getElementById('transactionSubcategory');
+                    const dateEl = document.getElementById('transactionDate');
+
+                    // 2. Criação do objeto 'transaction' (AQUI É ONDE ELE É DEFINIDO)
+                    const transaction = {
+                        description: descEl ? descEl.value : "",
+                        amount: amountEl ? parseFloat(amountEl.value) : 0,
+                        type: typeEl ? typeEl.value : "income",
+                        categoryId: catEl ? catEl.value : "",
+                        categoryName: catEl && catEl.options[catEl.selectedIndex] ? catEl.options[catEl.selectedIndex].text : "",
+                        subcategory: subCatEl ? subCatEl.value : "",
+                        date: dateEl ? dateEl.value : new Date().toISOString().split('T')[0],
                         createdAt: new Date().toISOString()
                     };
-                    
-                    await this.addTransaction(newTransaction);
-                    form.reset();
-                }
+
+                    // 3. Validação simples
+                    if (!transaction.description || !transaction.amount) {
+                        this.showToast('Por favor, preencha descrição e valor.', 'error');
+                        return;
+                    }
+
+                    try {
+                        // 4. Agora o 'transaction' existe e pode ser salvo
+                        await db.collection("transacoes").add(transaction);
+                        
+                        form.reset();
+                        if (typeof this.setDefaultDates === 'function') this.setDefaultDates();
+                        this.showToast('Transação registrada com sucesso!', 'success');
+                    } catch (error) {
+                        console.error("Erro ao salvar:", error);
+                        this.showToast('Erro ao salvar transação: ' + error.message, 'error');
+                    }
+                };
+            
 
                 // Formulário de categoria
                 const categoryForm = document.getElementById('categoryForm');
