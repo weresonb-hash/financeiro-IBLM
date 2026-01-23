@@ -712,7 +712,7 @@
                 <div class="chart-legend" id="expensesLegend">
                     <!-- Legenda será preenchida dinamicamente -->
                 </div>
-            </div>
+            </div>  
             
             <div class="chart-section">
                 <h2 class="chart-title">
@@ -940,7 +940,9 @@
         class ChurchFinancialSystem {
             constructor() {
                 this.transactions = [];
-                this.categories = [];
+                this.categories = this.getDefaultCategories(); // Inicia com padrão, mas o Firebase vai sobrescrever
+                //this.currentEditingCategory = null
+                this.editTransactionId = null
                 this.setupRealtimeSync();
             }
 
@@ -958,49 +960,82 @@
             setupRealtimeSync() {
                 // Sincronizar Transações
                 db.collection("transacoes").orderBy("date", "desc").onSnapshot((snapshot) => {
-                    this.transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    
-                    // Essencial para o gráfico atualizar em tempo real no outro terminal:
-                    this.updateUI(); 
-                    this.updateCharts();
+                    // Limpa e atualiza apenas com o que está no Firebase
+                    this.transactions = snapshot.docs.map(doc => ({ 
+                        id: doc.id, 
+                        ...doc.data() 
+                    }));
+                    this.updateUI();
                 });
 
                 // Sincronizar Categorias em Tempo Real
                 db.collection("configuracoes").doc("categorias").onSnapshot((doc) => {
                     if (doc.exists) {
-                        const data = doc.data();
-                        // Atualiza a memória local do sistema com o que veio da nuvem
-                        this.categories = data;
-                        
-                        // 1. Atualiza a lista visual em "Gerenciar Categorias"
+                        this.categories = doc.data();
                         this.renderCategories();
-                        
-                        // 2. Atualiza os campos de seleção (dropdowns) do formulário
-                        const type = document.getElementById('transactionType')?.value || 'income';
-                        this.updateCategoryOptions(type);
-                        
-                        console.log("Categorias sincronizadas entre terminais.");
-                    } else {
-                        // Se o documento sumir do banco, restaura o padrão
-                        this.categories = this.getDefaultCategories();
-                        this.saveCategoriesCloud();
+                        this.updateCategoryOptions(document.getElementById('transactionType')?.value || 'income');
                     }
-                }, (error) => {
-                    console.error("Erro na sincronização de categorias:", error);
                 });
 
                 // Sincronizar Logo
+                // Sincronizar Logo
                 db.collection("configuracoes").doc("logo").onSnapshot((doc) => {
                     if (doc.exists && doc.data().base64) {
-                        const logoData = doc.data().base64;
-                        const placeholders = document.querySelectorAll('.logo-container, #logoPlaceholder');
+                        const logoBase64 = doc.data().base64; // Definimos a variável corretamente
+                        this.displayLogo(logoBase64);
+                        
+                        const placeholders = [
+                            document.getElementById('logoPlaceholder'),
+                            document.querySelector('.church-logo')
+                        ];
                         
                         placeholders.forEach(el => {
-                            el.innerHTML = `<img src="${logoData}" style="max-height: 50px; width: auto;">`;
+                            if (el) {
+                                // Ajuste: usamos logoBase64 aqui
+                                if (el.tagName === 'IMG') el.src = logoBase64;
+                                else el.innerHTML = `<img src="${logoBase64}" class="church-logo" style="max-height: 50px;">`;
+                            }
                         });
-                        console.log("Logo atualizada em todos os terminais");
                     }
                 });
+            }
+
+            async saveEdit() {
+                const id = document.getElementById('editTransactionId').value;
+                const categorySelect = document.getElementById('editTransactionCategory');
+
+                if (!id || !categorySelect) return;
+
+                const updatedData = {
+                    description: document.getElementById('editTransactionDescription').value,
+                    amount: parseFloat(document.getElementById('editTransactionAmount').value),
+                    type: document.getElementById('editTransactionType').value,
+                    categoryId: categorySelect.value,
+                    // O categoryName é essencial para o seu método updateCharts() funcionar!
+                    categoryName: categorySelect.options[categorySelect.selectedIndex].text, 
+                    subcategory: document.getElementById('editTransactionSubcategory').value,
+                    date: document.getElementById('editTransactionDate').value
+                };
+
+                try {
+                    await db.collection("transacoes").doc(id).update(updatedData);
+                    this.closeEditModal();
+                    this.showToast('Transação atualizada com sucesso!', 'success');
+                    // Note: Não chamamos updateUI aqui porque o onSnapshot já fará isso automaticamente
+                } catch (error) {
+                    console.error("Erro ao atualizar transação:", error);
+                    this.showToast('Erro ao atualizar dados', 'error');
+                }
+            }
+
+            async saveCategoriesCloud() {
+                try {
+                    await db.collection("configuracoes").doc("categorias").set(this.categories);
+                    console.log("Categorias sincronizadas com sucesso na nuvem.");
+                } catch (error) {
+                    console.error("Erro ao salvar categorias na nuvem:", error);
+                    this.showToast('Erro ao sincronizar categorias', 'error');
+                }
             }
 
             // 3. SALVAR NO FIREBASE
@@ -1008,9 +1043,6 @@
                 await db.collection("transacoes").add(transaction);
             }
 
-            async deleteTransaction(id) {
-                await db.collection("transacoes").doc(id).delete();
-            }
 
             async saveCategoriesCloud() {
                 try {
@@ -1023,30 +1055,49 @@
                 }
             }
 
-            async uploadLogo(file) {
+            async handleLogoUpload(event) {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                if (file.size > 500 * 1024) { // Limite de 500KB para Base64
+                    this.showToast('Logo muito grande. Use uma imagem menor.', 'error');
+                    return;
+                }
+
                 const reader = new FileReader();
                 reader.onload = async (e) => {
                     const base64Data = e.target.result;
-                    
                     try {
-                        // Grava no Firebase. Isso criará o campo 'base64' que está faltando.
+                        // SALVA NA NUVEM - Isso faz a logo persistir e atualizar nos outros terminais
                         await db.collection("configuracoes").doc("logo").set({
-                            base64: base64Data
+                            base64: base64Data,
+                            updatedAt: new Date().toISOString()
                         });
-                        this.showToast('Logo atualizada em todos os terminais!', 'success');
+                        this.showToast('Logo atualizada com sucesso!', 'success');
                     } catch (error) {
                         console.error("Erro ao salvar logo:", error);
+                        this.showToast('Erro ao sincronizar logo.', 'error');
                     }
                 };
                 reader.readAsDataURL(file);
             }
 
+
             // 4. DELETAR DO FIREBASE
             async deleteTransaction(id) {
+                if (!confirm('Tem certeza que deseja excluir este lançamento?')) return;
+
                 try {
+                    // Comando CRÍTICO: Isto apaga o documento real no banco de dados Firebase
                     await db.collection("transacoes").doc(id).delete();
+                    
+                    // Não precisamos de filtrar o array manualmente nem de saveData()
+                    // O onSnapshot (tempo real) vai detectar a exclusão e limpar a sua tela sozinho
+                    
+                    this.showToast('Lançamento excluído com sucesso!', 'success');
                 } catch (error) {
-                    console.error("Erro ao deletar:", error);
+                    console.error("Erro ao excluir do Firebase:", error);
+                    this.showToast('Erro ao excluir: verifique a sua ligação à internet.', 'error');
                 }
             }
 
@@ -1054,6 +1105,7 @@
                 this.updateBalance();
                 this.renderTransactions();
                 this.updateCharts();
+                
             }
 
             updateBalance() {
@@ -1221,44 +1273,46 @@
                 form.onsubmit = async (e) => {
                     e.preventDefault();
 
-                    // 1. Captura dos elementos do HTML
-                    const descEl = document.getElementById('transactionDescription');
-                    const amountEl = document.getElementById('transactionAmount');
-                    const typeEl = document.getElementById('transactionType');
-                    const catEl = document.getElementById('transactionCategory');
-                    const subCatEl = document.getElementById('transactionSubcategory');
-                    const dateEl = document.getElementById('transactionDate');
-
-                    // 2. Criação do objeto 'transaction' (AQUI É ONDE ELE É DEFINIDO)
-                    const transaction = {
-                        description: descEl ? descEl.value : "",
-                        amount: amountEl ? parseFloat(amountEl.value) : 0,
-                        type: typeEl ? typeEl.value : "income",
-                        categoryId: catEl ? catEl.value : "",
-                        categoryName: catEl && catEl.options[catEl.selectedIndex] ? catEl.options[catEl.selectedIndex].text : "",
-                        subcategory: subCatEl ? subCatEl.value : "",
-                        date: dateEl ? dateEl.value : new Date().toISOString().split('T')[0],
-                        createdAt: new Date().toISOString()
+                    const catSelect = document.getElementById('transactionCategory');
+                    // Definimos a variável aqui para que ela exista em todo o bloco abaixo
+                    const transactionData = {
+                        description: document.getElementById('transactionDescription').value.trim(),
+                        amount: parseFloat(document.getElementById('transactionAmount').value),
+                        type: document.getElementById('transactionType').value,
+                        categoryId: catSelect.value,
+                        categoryName: catSelect.options[catSelect.selectedIndex].text,
+                        subcategory: document.getElementById('transactionSubcategory')?.value || "",
+                        date: document.getElementById('transactionDate').value,
+                        updatedAt: new Date().toISOString()
                     };
 
-                    // 3. Validação simples
-                    if (!transaction.description || !transaction.amount) {
-                        this.showToast('Por favor, preencha descrição e valor.', 'error');
-                        return;
-                    }
-
                     try {
-                        // 4. Agora o 'transaction' existe e pode ser salvo
-                        await db.collection("transacoes").add(transaction);
-                        
+                        if (this.editingTransactionId) {
+                            // MODO EDIÇÃO: Usa o ID que guardamos ao clicar em editar
+                            await db.collection("transacoes").doc(this.editingTransactionId).update(transactionData);
+                            this.showToast('Lançamento atualizado com sucesso!', 'success');
+                            this.editingTransactionId = null; // Limpa para o próximo não virar edição
+                        } else {
+                            // MODO NOVO: Cria um novo registro
+                            transactionData.createdAt = new Date().toISOString();
+                            await db.collection("transacoes").add(transactionData);
+                            this.showToast('Lançamento realizado com sucesso!', 'success');
+                        }
+
                         form.reset();
-                        if (typeof this.setDefaultDates === 'function') this.setDefaultDates();
-                        this.showToast('Transação registrada com sucesso!', 'success');
+                        this.closeModal('transactionModal'); // Fecha a janela após salvar
+                        this.setDefaultDates();
+                        
+                        // Volta o botão ao texto original
+                        const submitBtn = form.querySelector('button[type="submit"]');
+                        if (submitBtn) submitBtn.innerHTML = '<i class="fas fa-plus"></i> Adicionar Lançamento';
+
                     } catch (error) {
-                        console.error("Erro ao salvar:", error);
-                        this.showToast('Erro ao salvar transação: ' + error.message, 'error');
+                        console.error("Erro ao salvar no Firebase:", error);
+                        
                     }
                 };
+            
             
 
                 // Formulário de categoria
@@ -1331,22 +1385,18 @@
             }
 
             setDefaultDates() {
-                const today = new Date().toISOString().split('T')[0];
-                const transactionDate = document.getElementById('transactionDate');
-                const editTransactionDate = document.getElementById('editTransactionDate');
-                
-                if (transactionDate) transactionDate.value = today;
-                if (editTransactionDate) editTransactionDate.value = today;
-                
-                const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
-                const lastDay = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().split('T')[0];
-                
-                const reportStartDate = document.getElementById('reportStartDate');
-                const reportEndDate = document.getElementById('reportEndDate');
-                
-                if (reportStartDate) reportStartDate.value = firstDay;
-                if (reportEndDate) reportEndDate.value = lastDay;
+                const agora = new Date();
+                const ano = agora.getFullYear();
+                const mes = String(agora.getMonth() + 1).padStart(2, '0');
+                const dia = String(agora.getDate()).padStart(2, '0');
+                const dataLocal = `${ano}-${mes}-${dia}`;
+
+                ['transactionDate', 'filterStartDate', 'filterEndDate'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.value = dataLocal;
+                });
             }
+            
 
             // Preenche o Select de Categorias (Pai)
             updateCategoryOptions(type) {
@@ -1451,7 +1501,7 @@
                 };
 
                 this.transactions.push(transaction);
-                this.saveData();
+                
                 this.updateDashboard();
                 this.renderTransactions();
                 this.updateCharts();
@@ -1471,28 +1521,31 @@
                 const transaction = this.transactions.find(t => t.id === id);
                 if (!transaction) return;
 
-                this.currentEditingTransaction = transaction;
+                // Guarda o ID para o salvamento saber que deve atualizar e não criar novo
+                this.editingTransactionId = id; 
+
+                // Preenche os campos
+                document.getElementById('transactionDescription').value = transaction.description;
+                document.getElementById('transactionAmount').value = transaction.amount;
+                document.getElementById('transactionType').value = transaction.type;
                 
-                const editTransactionId = document.getElementById('editTransactionId');
-                const editTransactionType = document.getElementById('editTransactionType');
-                const editTransactionCategory = document.getElementById('editTransactionCategory');
-                const editTransactionSubcategory = document.getElementById('editTransactionSubcategory');
-                const editTransactionAmount = document.getElementById('editTransactionAmount');
-                const editTransactionDescription = document.getElementById('editTransactionDescription');
-                const editTransactionDate = document.getElementById('editTransactionDate');
+                this.updateCategoryOptions(transaction.type);
+                document.getElementById('transactionCategory').value = transaction.categoryId;
+                
+                this.updateSubcategoryOptions(transaction.categoryId);
+                if (transaction.subcategory) {
+                    const subcatEl = document.getElementById('transactionSubcategory');
+                    if (subcatEl) subcatEl.value = transaction.subcategory;
+                }
+                
+                document.getElementById('transactionDate').value = transaction.date;
 
-                if (editTransactionId) editTransactionId.value = transaction.id;
-                if (editTransactionType) editTransactionType.value = transaction.type;
-                this.updateEditCategoryOptions(transaction.type);
-                if (editTransactionCategory) editTransactionCategory.value = transaction.categoryId;
-                this.updateEditSubcategoryOptions(transaction.categoryId);
-                if (editTransactionSubcategory) editTransactionSubcategory.value = transaction.subcategory;
-                if (editTransactionAmount) editTransactionAmount.value = transaction.amount;
-                if (editTransactionDescription) editTransactionDescription.value = transaction.description;
-                if (editTransactionDate) editTransactionDate.value = transaction.date;
-
-                const editModal = document.getElementById('editTransactionModal');
-                if (editModal) editModal.style.display = 'block';
+                // ABRE A JANELA (MODAL)
+                this.openModal('transactionModal');
+                
+                // Altera o texto do botão
+                const submitBtn = document.querySelector('#transactionForm button[type="submit"]');
+                if (submitBtn) submitBtn.innerHTML = '<i class="fas fa-save"></i> Atualizar Lançamento';
             }
 
             updateTransaction() {
@@ -1524,7 +1577,7 @@
                     date: editTransactionDate.value
                 };
 
-                this.saveData();
+                
                 this.updateDashboard();
                 this.renderTransactions();
                 this.updateCharts();
@@ -1532,16 +1585,6 @@
                 this.showToast('Transação atualizada com sucesso!', 'success');
             }
 
-            deleteTransaction(id) {
-                if (confirm('Tem certeza que deseja excluir esta transação?')) {
-                    this.transactions = this.transactions.filter(t => t.id !== id);
-                    this.saveData();
-                    this.updateDashboard();
-                    this.renderTransactions();
-                    this.updateCharts();
-                    this.showToast('Transação excluída com sucesso!', 'warning');
-                }
-            }
 
             // 1. Inicia o modo de edição e abre o modal
             editCategory(categoryId, type) {
@@ -1683,13 +1726,14 @@
                 
 
             updateDashboard() {
-                const currentMonth = new Date().getMonth();
-                const currentYear = new Date().getFullYear();
+                const agora = new Date();
+                const currentMonth = agora.getMonth();
+                const currentYear = agora.getFullYear();
                 
+                // Filtro corrigido para evitar erro de fuso horário
                 const monthlyTransactions = this.transactions.filter(t => {
-                    const transactionDate = new Date(t.date);
-                    return transactionDate.getMonth() === currentMonth && 
-                           transactionDate.getFullYear() === currentYear;
+                    const [year, month] = t.date.split('-').map(Number);
+                    return (month - 1) === currentMonth && year === currentYear;
                 });
 
                 const totalIncome = monthlyTransactions
@@ -1707,116 +1751,77 @@
                     .filter(t => t.type === 'expense')
                     .reduce((sum, t) => sum + t.amount, 0);
 
-                const pendingAmount = this.transactions
-                    .filter(t => new Date(t.date) > new Date())
-                    .reduce((sum, t) => sum + t.amount, 0);
-
-                const totalIncomeElement = document.getElementById('totalIncome');
-                const totalExpensesElement = document.getElementById('totalExpenses');
-                const currentBalanceElement = document.getElementById('currentBalance');
-                const pendingAmountElement = document.getElementById('pendingAmount');
-
-                if (totalIncomeElement) totalIncomeElement.textContent = this.formatCurrency(totalIncome);
-                if (totalExpensesElement) totalExpensesElement.textContent = this.formatCurrency(totalExpenses);
-                if (currentBalanceElement) currentBalanceElement.textContent = this.formatCurrency(currentBalance);
-                if (pendingAmountElement) pendingAmountElement.textContent = this.formatCurrency(pendingAmount);
+                // Cards do topo
+                if (document.getElementById('totalIncome')) document.getElementById('totalIncome').textContent = this.formatCurrency(totalIncome);
+                if (document.getElementById('totalExpenses')) document.getElementById('totalExpenses').textContent = this.formatCurrency(totalExpenses);
+                if (document.getElementById('currentBalance')) document.getElementById('currentBalance').textContent = this.formatCurrency(currentBalance);
             }
 
             updateCharts() {
-                this.updateExpensesPieChart();
-                this.updateTrendChart();
-            }
+                // IDs dos Canvas no seu HTML
+                const ctxCategory = document.getElementById('categoryChart') || document.getElementById('expensesPieChart');
+                const ctxTrend = document.getElementById('trendChart');
+                
+                if (!ctxCategory || this.transactions.length === 0) return;
 
-            updateExpensesPieChart() {
-                const expenseTransactions = this.transactions.filter(t => t.type === 'expense');
-                const categoryTotals = {};
+                // 1. GRÁFICO DE CATEGORIAS (DESPESAS)
+                const expensesByCategory = this.transactions
+                    .filter(t => t.type === 'expense')
+                    .reduce((acc, t) => {
+                        const catName = t.categoryName || 'Outras';
+                        acc[catName] = (acc[catName] || 0) + t.amount;
+                        return acc;
+                    }, {});
 
-                expenseTransactions.forEach(transaction => {
-                    const category = this.getCategoryById(transaction.categoryId);
-                    if (category) {
-                        if (!categoryTotals[category.name]) {
-                            categoryTotals[category.name] = 0;
-                        }
-                        categoryTotals[category.name] += transaction.amount;
-                    }
-                });
+                const labels = Object.keys(expensesByCategory);
+                const data = Object.values(expensesByCategory);
 
-                const labels = Object.keys(categoryTotals);
-                const data = Object.values(categoryTotals);
-                const total = data.reduce((sum, value) => sum + value, 0);
-
-                // CORREÇÃO: Usar função separada para formatar moeda
-                const formatCurrency = this.formatCurrency.bind(this);
-
-                const colors = [
-                    '#e74c3c', '#c0392b', '#a93226', '#922b21', '#7b241c',
-                    '#f39c12', '#d68910', '#b7950b', '#9c640c', '#7e5109',
-                    '#8e44ad', '#7d3c98', '#6c3483', '#5b2c6f', '#4a235a',
-                    '#3498db', '#2980b9', '#21618c', '#1b4f7a', '#154360'
-                ];
-
-                const chartData = {
-                    labels: labels,
-                    datasets: [{
-                        data: data,
-                        backgroundColor: colors.slice(0, labels.length),
-                        borderColor: '#ffffff',
-                        borderWidth: 2,
-                        hoverOffset: 10
-                    }]
-                };
-
-                const config = {
-                    type: 'pie',
-                    data: chartData,
+                if (this.categoryChart) this.categoryChart.destroy();
+                
+                this.categoryChart = new Chart(ctxCategory, {
+                    type: 'doughnut', // ou 'pie'
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            data: data,
+                            backgroundColor: ['#e74c3c', '#e67e22', '#f1c40f', '#9b59b6', '#34495e', '#1abc9c']
+                        }]
+                    },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
-                        plugins: {
-                            legend: {
-                                display: false
-                            },
-                            tooltip: {
-                                callbacks: {
-                                    label: function(context) {
-                                        const label = context.label || '';
-                                        const value = context.raw || 0;
-                                        const percentage = ((value / total) * 100).toFixed(1);
-                                        return `${label}: ${formatCurrency(value)} (${percentage}%)`;
-                                    }
-                                }
-                            },
+                        plugins: { 
+                            legend: { position: 'bottom' },
+                            // Ativa os números dentro do gráfico se o plugin estiver carregado
                             datalabels: {
-                                color: '#ffffff',
-                                font: {
-                                    weight: 'bold',
-                                    size: 12
+                                formatter: (value, ctx) => {
+                                    let sum = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                    return ((value * 100) / sum).toFixed(1) + "%";
                                 },
-                                formatter: (value, context) => {
-                                    const percentage = ((value / total) * 100).toFixed(1);
-                                    return `${percentage}%`;
-                                }
+                                color: '#fff',
                             }
-                        },
-                        animation: {
-                            animateRotate: true,
-                            animateScale: true
                         }
                     },
-                    plugins: [ChartDataLabels]
-                };
+                    plugins: [ChartDataLabels] // Remova se não estiver usando o plugin de labels
+                });
 
-                // Destruir gráfico anterior se existir
-                if (this.expensesPieChart) {
-                    this.expensesPieChart.destroy();
-                }
+                // 2. GRÁFICO DE TENDÊNCIA
+                if (!ctxTrend) return;
+                const lastDates = [...new Set(this.transactions.map(t => t.date))].sort().slice(-7);
+                const incomeData = lastDates.map(d => this.transactions.filter(t => t.date === d && t.type === 'income').reduce((s, t) => s + t.amount, 0));
+                const expenseData = lastDates.map(d => this.transactions.filter(t => t.date === d && t.type === 'expense').reduce((s, t) => s + t.amount, 0));
 
-                // Criar novo gráfico
-                const ctx = document.getElementById('expensesPieChart');
-                if (ctx) {
-                    this.expensesPieChart = new Chart(ctx, config);
-                    this.updateExpensesLegend(labels, data, total, colors);
-                }
+                if (this.trendChart) this.trendChart.destroy();
+                this.trendChart = new Chart(ctxTrend, {
+                    type: 'line',
+                    data: {
+                        labels: lastDates.map(d => d.split('-').reverse().slice(0,2).join('/')),
+                        datasets: [
+                            { label: 'Receitas', data: incomeData, borderColor: '#2ecc71', tension: 0.3 },
+                            { label: 'Despesas', data: expenseData, borderColor: '#e74c3c', tension: 0.3 }
+                        ]
+                    }
+                });
             }
 
             updateExpensesLegend(labels, data, total, colors) {
@@ -1867,91 +1872,80 @@
             }
 
             updateTrendChart() {
-                const monthlyData = this.getMonthlyTrendData();
-                
-                // CORREÇÃO: Usar função separada para formatar moeda
-                const formatCurrency = this.formatCurrency.bind(this);
+                const ctx = document.getElementById('trendChart');
+                if (!ctx) return;
 
-                const chartData = {
-                    labels: monthlyData.labels,
-                    datasets: [
-                        {
-                            label: 'Receitas',
-                            data: monthlyData.income,
-                            borderColor: '#27ae60',
-                            backgroundColor: 'rgba(39, 174, 96, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        },
-                        {
-                            label: 'Despesas',
-                            data: monthlyData.expenses,
-                            borderColor: '#e74c3c',
-                            backgroundColor: 'rgba(231, 76, 60, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        }
-                    ]
-                };
+                const allDates = [...new Set(this.transactions.map(t => t.date))]
+                    .filter(d => d)
+                    .sort()
+                    .slice(-30);
 
-                const config = {
-                    type: 'line',
-                    data: chartData,
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: {
-                                position: 'top',
-                            },
-                            tooltip: {
-                                mode: 'index',
-                                intersect: false,
-                                callbacks: {
-                                    label: function(context) {
-                                        return `${context.dataset.label}: ${formatCurrency(context.raw)}`;
-                                    }
-                                }
-                            }
-                        },
-                        scales: {
-                            x: {
-                                display: true,
-                                title: {
-                                    display: true,
-                                    text: 'Mês'
-                                }
-                            },
-                            y: {
-                                display: true,
-                                title: {
-                                    display: true,
-                                    text: 'Valor (R$)'
-                                },
-                                ticks: {
-                                    callback: function(value) {
-                                        return formatCurrency(value);
-                                    }
-                                }
-                            }
-                        },
-                        animation: {
-                            duration: 1000,
-                            easing: 'easeInOutQuart'
-                        }
-                    }
-                };
+                if (allDates.length === 0) return;
 
-                // Destruir gráfico anterior se existir
+                const incomeData = allDates.map(date => 
+                    this.transactions.filter(t => t.date === date && t.type === 'income')
+                        .reduce((sum, t) => sum + t.amount, 0)
+                );
+
+                const expenseData = allDates.map(date => 
+                    this.transactions.filter(t => t.date === date && t.type === 'expense')
+                        .reduce((sum, t) => sum + t.amount, 0)
+                );
+
                 if (this.trendChart) {
                     this.trendChart.destroy();
                 }
 
-                // Criar novo gráfico
-                const ctx = document.getElementById('trendChart');
-                if (ctx) {
-                    this.trendChart = new Chart(ctx, config);
-                }
+                this.trendChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: allDates.map(d => d.split('-').reverse().slice(0, 2).join('/')),
+                        datasets: [
+                            {
+                                label: 'Receitas',
+                                data: incomeData,
+                                borderColor: '#2ecc71',
+                                backgroundColor: 'rgba(46, 204, 113, 0.1)', // Fundo levemente esverdeado
+                                borderWidth: 4,
+                                pointRadius: 5,
+                                pointBackgroundColor: '#2ecc71',
+                                tension: 0.45, // Aumentado para criar a curva suave
+                                fill: true     // Preenche a área abaixo da linha
+                            },
+                            {
+                                label: 'Despesas',
+                                data: expenseData,
+                                borderColor: '#e74c3c',
+                                backgroundColor: 'rgba(231, 76, 60, 0.1)', // Fundo levemente avermelhado
+                                borderWidth: 4,
+                                pointRadius: 5,
+                                pointBackgroundColor: '#e74c3c',
+                                tension: 0.45, // Aumentado para criar a curva suave
+                                fill: true     // Preenche a área abaixo da linha
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: {
+                            intersect: false,
+                            mode: 'index',
+                        },
+                        plugins: {
+                            legend: { position: 'bottom' }
+                        },
+                        scales: {
+                            y: { 
+                                beginAtZero: true,
+                                grid: { color: 'rgba(0,0,0,0.05)' }
+                            },
+                            x: {
+                                grid: { display: false }
+                            }
+                        }
+                    }
+                });
             }
 
             getMonthlyTrendData() {
@@ -1997,8 +1991,10 @@
                 const container = document.getElementById('transactionsList');
                 if (!container) return;
 
-                const recentTransactions = this.transactions
-                    .sort((a, b) => new Date(b.date) - new Date(a.date))
+                // Ordenação estável e segura: usamos localCompare para strings de data YYYY-MM-DD
+                // Isso garante que a data mais recente fique no topo sem converter para objeto Date
+                const recentTransactions = [...this.transactions]
+                    .sort((a, b) => b.date.localeCompare(a.date))
                     .slice(0, 10);
 
                 if (recentTransactions.length === 0) {
@@ -2007,8 +2003,14 @@
                 }
 
                 container.innerHTML = recentTransactions.map(transaction => {
-                    const category = this.getCategoryById(transaction.categoryId);
-                    const categoryName = category ? category.name : 'Categoria não encontrada';
+                    // CORREÇÃO DA DATA: Inverte a string "2026-01-22" para "22/01/2026" 
+                    // Isso ignora fusos horários e resolve o erro do dia anterior.
+                    const dataExibicao = transaction.date.split('-').reverse().join('/');
+
+                    // Tenta pegar o nome da categoria que já salvamos no objeto ou busca pelo ID
+                    const categoryName = transaction.categoryName || 
+                                    (this.getCategoryById(transaction.categoryId)?.name) || 
+                                    'Sem Categoria';
                     
                     return `
                         <div class="transaction-item ${transaction.type}">
@@ -2022,7 +2024,7 @@
                                 <i class="fas fa-tag"></i> ${categoryName} 
                                 ${transaction.subcategory ? `> ${transaction.subcategory}` : ''}
                                 <br>
-                                <i class="fas fa-calendar"></i> ${this.formatDate(transaction.date)}
+                                <i class="fas fa-calendar"></i> ${dataExibicao}
                             </div>
                             <div class="transaction-actions" style="margin-top: 10px; text-align: right;">
                                 <button type="button" class="btn btn-warning btn-small" onclick="churchSystem.editTransaction('${transaction.id}')">
@@ -2692,17 +2694,9 @@
                 }, 3000);
             }
 
-            saveData() {
-                localStorage.setItem('churchTransactions', JSON.stringify(this.transactions));
-                localStorage.setItem('churchCategories', JSON.stringify(this.categories));
-            }
 
-            loadSavedLogo() {
-                const savedLogo = localStorage.getItem('churchLogo');
-                if (savedLogo) {
-                    this.displayLogo(savedLogo);
-                }
-            }
+
+ 
 
             displayLogo(imageData) {
                 const logoImg = document.getElementById('churchLogo');
@@ -2788,23 +2782,24 @@
             if (logoInput) logoInput.click();
         }
 
-        function handleLogoChange(event) {
+        async function handleLogoChange(event) {
             const file = event.target.files[0];
             if (file && file.type.startsWith('image/')) {
                 const reader = new FileReader();
-                reader.onload = function(e) {
+                reader.onload = async function(e) {
                     const imageData = e.target.result;
-                    localStorage.setItem('churchLogo', imageData);
-                    if (churchSystem) {
-                        churchSystem.displayLogo(imageData);
-                        churchSystem.showToast('Logo atualizada com sucesso!', 'success');
+                    try {
+                        // SALVA NO FIREBASE (Substitui o localStorage)
+                        await db.collection("configuracoes").doc("logo").set({
+                            base64: imageData,
+                            updatedAt: new Date().toISOString()
+                        });
+                        churchSystem.showToast('Logo atualizada em todos os terminais!', 'success');
+                    } catch (error) {
+                        churchSystem.showToast('Erro ao salvar logo na nuvem', 'error');
                     }
                 };
                 reader.readAsDataURL(file);
-            } else {
-                if (churchSystem) {
-                    churchSystem.showToast('Por favor, selecione uma imagem válida!', 'error');
-                }
             }
         }
 
